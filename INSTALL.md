@@ -2,7 +2,7 @@
 
 This guide shows how to install the M1 CPU Performance Mode feature on Omarchy (Asahi Linux).
 
-The feature sets the CPU to performance, balanced, or power-saver mode. It uses direct writes to system files. A systemd service keeps the settings across boots and sleep.
+The feature sets the CPU to performance, balanced, or power-saver mode. It writes kernel controls. A systemd service applies the performance mode at boot. The service does not apply the mode after sleep.
 
 ## Prerequisites
 
@@ -95,7 +95,7 @@ cat /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor | sort | uniq -c
 cat /sys/devices/system/cpu/cpufreq/boost
 ```
 
-Expect "performance" governors and boost value 1.
+Expect eight "performance" governors and boost value 1. Read `cpuinfo_cur_freq` for the hardware clock. On this M1, the performance cores stay at 2988 MHz under load. The 3204 MHz value is a boost label.
 
 ## Switch modes later
 
@@ -143,10 +143,11 @@ sudo systemctl daemon-reload
 - Confirm the rule: `sudo -n -l /usr/local/bin/set-cpu-performance.sh`
 - Use `cpu-mode`, not pkexec.
 
-**Frequencies do not rise**
-- Run `verify.sh` and check the governor output.
-- Re-apply the performance mode.
-- Note that hardware thermal limits can still throttle the CPU.
+**The clock stays at 2988 MHz**
+- This is the hardware clock of the performance cores.
+- Read `cpuinfo_cur_freq`. Do not use the 3204 MHz boost label as the clock.
+- Performance mode does not raise a full-load CPU benchmark.
+- A long job on this Air can still slow down from heat. The machine has no fan.
 
 **Want to see what changed**
 - Use the `-v` flag on the script.

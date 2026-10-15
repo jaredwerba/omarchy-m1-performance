@@ -1,6 +1,6 @@
 [Unit]
-Description=Set CPU to performance mode on boot (and after sleep)
-After=multi-user.target sleep.target
+Description=Set CPU to performance mode at boot
+After=multi-user.target
 
 [Service]
 Type=oneshot

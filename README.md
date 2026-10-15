@@ -2,11 +2,13 @@
 
 ## Purpose
 
-This project provides a reliable, inspectable way to control Apple M1 CPU modes (performance, balanced, power-saver) on Omarchy (Asahi Linux).
+This project sets three CPU modes on an Apple M1 under Omarchy (Asahi Linux). The modes are performance, balanced, and power-saver.
 
-Default Asahi power management prioritizes efficiency. This gives explicit control for workloads needing sustained high clocks, lower latency, or better responsiveness.
+Each mode writes four kernel controls. The controls are the CPU governor, the boost flag, the PCIe ASPM policy, and the NVMe scheduler.
 
-Changes are applied directly to kernel sysfs interfaces and persist via systemd across boots and sleep/wake.
+Performance mode holds the clock request at the top of the table when the CPU is idle. Balanced mode and power-saver mode let the clocks fall. Under a full CPU load, the hardware clock is the same in all three modes.
+
+The systemd service applies the performance mode at boot. The service does not apply the mode after sleep.
 
 **How to install:** See the full guide in [INSTALL.md](INSTALL.md).
 
@@ -26,8 +28,11 @@ This project follows that:
 
 - Apple M1 (T8103 / j313)
 - 8 cores: 4× Icestorm (efficiency) + 4× Firestorm (performance)
-- Exposed in Linux with separate cpufreq policies
-- Max observed: ~2064 MHz (E-cores) / ~2988 MHz (P-cores) under performance
+- Linux shows two cpufreq policies. policy0 is cpu0–cpu3. policy4 is cpu4–cpu7.
+- Hardware clock: 2064 MHz on the efficiency cores. 2988 MHz on the performance cores.
+- The boost list also has 3096 MHz, 3144 MHz, and 3204 MHz. The hardware clock does not rise to those values.
+- The four performance cores share one clock. An idle core in policy4 does not raise the clock of a busy core.
+- Core capacity: 493 on an efficiency core. 1024 on a performance core.
 
 ## Raw Materials (What Experts Use)
 
@@ -66,7 +71,7 @@ Additional places experts check:
 The project includes:
 
 - `set-cpu-performance.sh` (v2.0-enhanced) — main logic with hardware detection, logging, verbose before/after, help
-- `cpu-performance.service` — systemd oneshot for boot + resume
+- `cpu-performance.service` — systemd oneshot. It runs at boot. It does not run after sleep.
 - `verify.sh` — report generator with checks + quick benchmark
 
 ### Enhanced Script Features
@@ -97,18 +102,21 @@ The guide also covers switching modes, uninstall, and troubleshooting.
 ## Usage
 
 ```
-set-cpu-performance.sh performance     # max performance (recommended)
-set-cpu-performance.sh balanced -v     # dynamic with details
-set-cpu-performance.sh power-saver
+set-cpu-performance.sh performance     # hold the top clock request
+set-cpu-performance.sh balanced -v     # schedutil, boost on
+set-cpu-performance.sh power-saver     # schedutil, boost off
 ```
 
 ## Verification
 
-Run the helper after applying a mode:
+Apply the mode first. Then run the helper:
 
 ```
-verify.sh performance
+cpu-mode performance
+verify.sh
 ```
+
+`verify.sh` does not apply the mode that you pass. It measures the active mode.
 
 It reports:
 - Hardware identification
@@ -118,30 +126,59 @@ It reports:
 - Thermals
 - Service status
 
-## Benchmark Results (Example on this M1)
+## Measured results
 
-**Hardware:** Apple M1 (T8103), 8 cores (4 Icestorm + 4 Firestorm)
+Test date: 2026-10-15. The machine is an Apple MacBook Air (M1, 2020). The model is j313. The SoC is t8103. The kernel is 7.1.12-2-7-ARCH. The driver is apple-cpufreq. The supply is AC power. The desktop stayed on.
 
-**Performance mode (confirmed governors=performance, boost=1):**
-- Frequencies sustained: 4× 2064 MHz, 4× 2988 MHz
-- Sysbench CPU (5s, 8 threads, max-prime=20000): ~16799 – 17048 events per second
-- Temps (light load): NAND ~38-39.5°C, Battery hotspot ~27-28°C
+Read `cpuinfo_cur_freq` during the load. The hardware clock is the same in each mode.
 
-**Settings applied:**
-- Governor: performance
-- Boost: 1
-- ASPM: performance
-- NVMe scheduler: none
+- Efficiency cores: 2064 MHz
+- Performance cores: 2988 MHz
 
-**Service:** active (exited), runs on boot and after sleep.
+The load test is `sysbench cpu --cpu-max-prime=20000 --threads=8 --time=5`. Each mode ran three times. The order rotated.
 
-**Note on comparison:** Switch to balanced (`set-cpu-performance.sh balanced`) and re-run `verify.sh` to compare events/sec and frequency distribution. Performance mode keeps higher sustained clocks.
+| Mode | Events per second |
+| --- | --- |
+| power-saver | 17822.50, 17637.53, 17690.34 |
+| balanced | 17778.28, 16818.42, 16775.88 |
+| performance | 17442.03, 17422.31, 17563.41 |
 
-These are real captured outputs. Reproduce on your hardware for your baseline.
+The scores overlap. Power-saver has the highest three results. Performance mode does not increase the score under this load.
+
+Idle power comes from the macsmc sensor "Total System Power".
+
+| Mode | Idle power |
+| --- | --- |
+| performance | 13.3 W to 14.6 W |
+| balanced | 9.7 W |
+| power-saver | 10.2 W |
+
+Performance mode costs about 4 W when the CPU is idle. The clocks stay at the top request. Balanced mode and power-saver mode let the clocks fall.
+
+The 3204 MHz value is a boost label. It is not a higher hardware clock.
+
+- In performance mode, `scaling_cur_freq` shows 3204 MHz.
+- `cpuinfo_cur_freq` stays at 2988 MHz.
+- One thread on cpu4 scores 3752.33 events per second with boost on.
+- The same thread scores 3747.24 events per second with boost off.
+
+The efficiency-core boost list is empty. The boost flag for policy0 stays 0. The script can still log `Boost=1`.
+
+Balanced mode and power-saver mode both set the schedutil governor. The powersave governor is available. The script does not select it. Under this load, schedutil already uses the 2988 MHz bin. Boost off does not move the hardware clock.
+
+You cannot set a frequency above this table. This is not an overclock. The fused table is the limit.
+
+NAND temperature stayed near 43°C. The battery hotspot stayed near 32°C. These short tests do not show a thermal limit.
+
+The test did not measure disk latency. The test did not measure PCIe latency. ASPM and the NVMe scheduler do change. Their speed effect is unknown.
+
+A failed sysfs write does not stop the script. The script still prints "Applied".
+
+Put a heavy thread on cpu4, cpu5, cpu6, or cpu7. An efficiency core has capacity 493. A performance core has capacity 1024. Use `taskset -c 4-7` for that work.
 
 ## Thermals and Power Monitoring
 
-Performance mode increases power draw and heat.
+Performance mode increases idle power by about 4 W. It does not increase the full-load CPU score above.
 
 Monitor with:
 ```
@@ -149,15 +186,15 @@ sensors
 watch -n 1 'sensors | grep -E "NAND|Hotspot"'
 ```
 
-Typical observations (M1, light-moderate load):
-- NAND Flash: 36-42°C
-- Battery Hotspot: ~25-30°C
-- Higher under sustained CPU load
+Short tests on this M1, on AC power:
+- NAND Flash: near 43°C
+- Battery Hotspot: near 32°C
+- A long job can still get hotter. This Air has no fan.
 
 **Warnings:**
 - Watch temperatures on laptops.
 - Throttling can still occur due to hardware thermal limits.
-- Increased power consumption in performance mode.
+- Performance mode uses more power when the CPU is idle.
 - Test with your specific workloads and ambient conditions.
 
 For long sessions, combine with monitoring tools and consider balanced for mixed use.
@@ -178,21 +215,27 @@ Check `/usr/share/omarchy/bin/` and Omarchy docs for menu/plugin patterns.
 
 ## Current State Example
 
-On this Omarchy M1 installation (kernel ~7.1.12 asahi):
-- Service enabled and recently successful.
-- All controls writable.
-- Frequencies reach the higher bins in performance mode.
-- NVMe and ASPM respond to the settings.
+On this Omarchy M1 (kernel 7.1.12-2-7-ARCH):
+- The service is enabled. It applies the performance mode at boot.
+- The governor and the boost flag change when you switch modes.
+- NVMe and ASPM change when you switch modes.
+- `cpuinfo_cur_freq` stays at 2988 MHz on the performance cores during load.
+- `scaling_cur_freq` can show 3204 MHz. That value is the boost label.
 
-Re-apply after major updates if governors reset to schedutil.
+Re-apply the mode after a kernel update if the governor returns to schedutil.
 
 ## Notes and Limitations
 
-- This removes conservative Linux defaults; it is not a full macOS parity tool.
+- The three mode names do not give three CPU speeds.
+- The hardware clock under load is 2064 MHz and 2988 MHz.
+- There is no overclock above the apple-cpufreq table.
+- The service does not run after sleep.
+- `verify.sh` does not change the mode.
+- A failed write can still print "Applied".
 - M1 has physical thermal and power limits.
-- Some interfaces may vary by exact kernel or configuration.
-- Always test stability.
-- Use at your own risk. Changes affect power, heat, and potentially battery life.
+- Some interfaces can differ on another kernel.
+- Test stability on your machine.
+- These changes affect power, heat, and battery life.
 
 ## Advanced / Expert Extensions
 

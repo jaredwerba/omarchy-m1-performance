@@ -54,9 +54,12 @@ systemctl status cpu-performance.service --no-pager 2>/dev/null | cat || echo "S
 echo
 
 echo "=== Recommendations ==="
-echo "- For performance mode, expect ~2.0-3.0 GHz sustained on M1 cores."
-echo "- Compare events/sec and freqs in balanced vs performance."
-echo "- Monitor temps during sustained loads."
-echo "- Re-apply after kernel updates if needed."
+echo "- This script does not change the mode. Apply the mode first."
+echo "- Read cpuinfo_cur_freq for the hardware clock."
+echo "- On this M1, a full load stays near 2064 MHz (E-cores) and 2988 MHz (P-cores)."
+echo "- The 3204 MHz value is a boost label. It is not a higher hardware clock."
+echo "- Full-load scores overlap across the three modes."
+echo "- Performance mode increases idle power. It does not increase this benchmark."
+echo "- Monitor temps during a long load. This Air has no fan."
 echo
 echo "Report complete. Use -v on the main script for more details during apply."

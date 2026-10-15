@@ -39,9 +39,9 @@ $SCRIPT_NAME - Set CPU performance mode on Apple Silicon (M1+)
 Usage: $SCRIPT_NAME [MODE] [OPTIONS]
 
 Modes:
-  performance   Maximum clocks, boost enabled, low-latency I/O (default)
-  balanced      Dynamic scaling with good responsiveness
-  power-saver   Conservative for battery/heat savings
+  performance   Hold the top clock request. Idle power increases (default)
+  balanced      schedutil governor, boost on
+  power-saver   schedutil governor, boost off
 
 Options:
   -h, --help     Show this help
@@ -58,7 +58,7 @@ Notes:
   - Mode changes need root once, via a scoped passwordless sudo rule
   - Run install.sh once. Later switches do not ask for a password
   - Persists via the accompanying systemd service
-  - Increases power/heat in performance mode
+  - Performance mode increases idle power. It does not raise full-load CPU speed
 EOF
 }
 
@@ -114,21 +114,21 @@ apply_settings() {
         boost_val=1
         aspm_policy="performance"
         sched="none"
-        msg="performance (max clocks, no power saving)"
+        msg="performance (governor performance, boost on)"
         ;;
       balanced)
         gov_target="schedutil"
         boost_val=1
         aspm_policy="default"
         sched="mq-deadline"
-        msg="balanced (dynamic + good responsiveness)"
+        msg="balanced (schedutil, boost on)"
         ;;
       power-saver|powersave)
         gov_target="schedutil"
         boost_val=0
         aspm_policy="powersave"
         sched="mq-deadline"
-        msg="power-saver (lower clocks, more savings)"
+        msg="power-saver (schedutil, boost off)"
         ;;
       *)
         log "Unknown mode $MODE, defaulting to performance"
