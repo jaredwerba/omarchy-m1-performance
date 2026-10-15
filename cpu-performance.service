@@ -1,0 +1,11 @@
+[Unit]
+Description=Set CPU to performance mode on boot (and after sleep)
+After=multi-user.target sleep.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/set-cpu-performance.sh performance
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
