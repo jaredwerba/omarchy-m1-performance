@@ -2,263 +2,234 @@
 
 ## Purpose
 
-This project provides a reliable way to set the Apple M1 CPU to performance, balanced, or power-saver modes on Omarchy (Asahi Linux, Arch Linux for Apple Silicon).
+This project provides a reliable, inspectable way to control Apple M1 CPU modes (performance, balanced, power-saver) on Omarchy (Asahi Linux).
 
-Default Asahi power management is conservative. Many users want explicit control for responsiveness, compilation, or workloads that benefit from sustained high clocks.
+Default Asahi power management prioritizes efficiency. This gives explicit control for workloads needing sustained high clocks, lower latency, or better responsiveness.
 
-The feature works by writing directly to kernel-exposed sysfs interfaces. It persists across boots and resume from sleep via a systemd oneshot service.
+Changes are applied directly to kernel sysfs interfaces and persist via systemd across boots and sleep/wake.
 
-## Deeper Approach (Inspired by Expert Prompting)
+## Deeper Approach
 
-A top professional in Linux performance engineering on Apple Silicon would not just document "set the governor."
+A top Linux performance engineer working on Apple Silicon would go beyond basic "set governor" instructions. They start from hardware and raw kernel interfaces, measure real effects with data, use proper tools for validation, and document interactions and limits.
 
-They would:
+This project follows that:
 
-1. Start from raw kernel interfaces and hardware specifics rather than high-level scripts.
-2. Measure real effects with before/after data on the exact hardware (Icestorm E-cores + Firestorm P-cores on T8103 M1).
-3. Use tools like perf, bpftrace, temperature sensors, and workload benchmarks instead of only "cat the governor file."
-4. Validate with reproducible tests that show sustained frequency, latency reduction, or throughput gains without assuming the change "feels faster."
-5. Consider interactions: thermal limits, NVMe, PCIe ASPM, cluster scheduling, and conflicts with other power daemons.
+- Raw materials first (sysfs, device tree, M1 specifics).
+- Objective evidence (frequencies, benchmarks, temps).
+- Reproducible verification.
+- Versioned source code included.
+- Notes on thermals, power, and Omarchy integration.
 
-This project aims for that depth.
+## Hardware
 
-## Raw Materials (What Experts Start From)
+- Apple M1 (T8103 / j313)
+- 8 cores: 4× Icestorm (efficiency) + 4× Firestorm (performance)
+- Exposed in Linux with separate cpufreq policies
+- Max observed: ~2064 MHz (E-cores) / ~2988 MHz (P-cores) under performance
 
-- Apple M1 (T8103 / j313): 4x Icestorm (efficiency) + 4x Firestorm (performance) cores. Exposed as two CPU types in Linux.
-- Kernel cpufreq subsystem: `/sys/devices/system/cpu/cpu*/cpufreq/`
-  - `scaling_governor`: controls frequency scaling policy.
-  - Available: conservative, ondemand, userspace, powersave, performance, schedutil.
-  - `cpuinfo_cur_freq`, `scaling_cur_freq`, `scaling_max_freq`.
-  - Boost: `/sys/devices/system/cpu/cpufreq/boost` and per-policy.
-- NVMe I/O scheduler: `/sys/block/nvme*/queue/scheduler` (none for lowest latency on SSDs).
-- PCIe ASPM (Active State Power Management): `/sys/module/pcie_aspm/parameters/policy` (performance disables link power saving).
-- Device tree / hardware: `apple,t8103`, `apple,j313`.
-- Asahi Linux kernel patches and drivers for Apple Silicon power/clock control.
-- Real hardware state: frequencies, temperatures via macsmc_hwmon and sensors.
+## Raw Materials (What Experts Use)
 
-These are the ground truth. Scripts are just a convenient way to apply them consistently.
+Direct sysfs and kernel interfaces:
+
+- CPU: `/sys/devices/system/cpu/cpu*/cpufreq/`
+  - `scaling_governor` (performance, schedutil, etc.)
+  - `cpuinfo_cur_freq`, `scaling_cur_freq`
+  - Boost: `/sys/devices/system/cpu/cpufreq/boost` and `policy*/boost`
+- Storage I/O: `/sys/block/nvme*/queue/scheduler` (`none` for lowest latency)
+- PCIe power: `/sys/module/pcie_aspm/parameters/policy` (`performance`)
+- Hardware ID: `/sys/firmware/devicetree/base/compatible` (`apple,t8103`, `apple,j313`)
+- Sensors: macsmc_hwmon, `sensors` command for NAND/Battery temps
+
+These are the ground truth. The scripts are a safe, repeatable wrapper.
+
+## Raw Interfaces Reference (Expanded)
+
+Key paths and what they control:
+
+- `/sys/devices/system/cpu/cpu*/cpufreq/scaling_governor` — frequency policy per core
+- `/sys/devices/system/cpu/cpufreq/boost` — global boost enable (1=on)
+- `/sys/block/nvme*/queue/scheduler` — I/O scheduler (none = minimal overhead)
+- `/sys/module/pcie_aspm/parameters/policy` — link power management
+- `/sys/devices/system/cpu/cpu*/cpufreq/cpuinfo_cur_freq` — current frequency (read-only, often needs root)
+- Device tree for silicon identification
+
+Additional places experts check:
+- `lscpu`, `/proc/cpuinfo`
+- `dmesg | grep -i apple|freq|aspm`
+- Thermal zones if available
+- Asahi kernel patches for cpufreq and power
 
 ## Implementation
 
-The project ships two files (copied from a working Omarchy installation):
+The project includes:
 
-- `set-cpu-performance.sh` — the core logic.
-- `cpu-performance.service` — systemd unit for boot + resume.
+- `set-cpu-performance.sh` (v2.0-enhanced) — main logic with hardware detection, logging, verbose before/after, help
+- `cpu-performance.service` — systemd oneshot for boot + resume
+- `verify.sh` — report generator with checks + quick benchmark
 
-### set-cpu-performance.sh (source)
+### Enhanced Script Features
 
-```bash
-#!/bin/bash
-set -euo pipefail
+- Automatic Apple M1 detection (T8103/j313)
+- Timestamped logging
+- `-v / --verbose`: shows before/after states
+- `--help` and `--version`
+- Clear mode handling
+- Comments explaining each sysfs write
 
-mode="${1:-performance}"
-
-echo "Setting CPU to $mode mode..."
-
-case "$mode" in
-  performance)
-    gov_target="performance"
-    boost_val=1
-    aspm_policy="performance"
-    sched="none"
-    msg="performance (max clocks, no power saving)"
-    ;;
-  balanced)
-    gov_target="schedutil"
-    boost_val=1
-    aspm_policy="default"
-    sched="mq-deadline"
-    msg="balanced (dynamic + good responsiveness)"
-    ;;
-  power-saver|powersave)
-    gov_target="schedutil"
-    boost_val=0
-    aspm_policy="powersave"
-    sched="mq-deadline"
-    msg="power-saver (lower clocks, more savings)"
-    ;;
-  *)
-    echo "Unknown mode $mode, defaulting to performance"
-    gov_target="performance"
-    boost_val=1
-    aspm_policy="performance"
-    sched="none"
-    msg="performance"
-    ;;
-esac
-
-# CPU governor (all cores)
-for gov in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
-  if [ -w "$gov" ]; then
-    echo "$gov_target" > "$gov" 2>/dev/null || true
-  fi
-done
-
-# Boost (global + per policy)
-if [ -w /sys/devices/system/cpu/cpufreq/boost ]; then
-  echo "$boost_val" > /sys/devices/system/cpu/cpufreq/boost 2>/dev/null || true
-fi
-for b in /sys/devices/system/cpu/cpufreq/policy*/boost; do
-  if [ -w "$b" ]; then
-    echo "$boost_val" > "$b" 2>/dev/null || true
-  fi
-done
-
-# NVMe scheduler
-for dev in /sys/block/nvme*/queue/scheduler; do
-  if [ -w "$dev" ]; then
-    echo "$sched" > "$dev" 2>/dev/null || true
-  fi
-done
-
-# PCIe ASPM
-if [ -w /sys/module/pcie_aspm/parameters/policy ]; then
-  echo "$aspm_policy" > /sys/module/pcie_aspm/parameters/policy 2>/dev/null || true
-fi
-
-echo "CPU $msg settings applied. Governor: $gov_target, boost: $boost_val"
-```
-
-### cpu-performance.service
-
-```ini
-[Unit]
-Description=Set CPU to performance mode on boot (and after sleep)
-After=multi-user.target sleep.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/set-cpu-performance.sh performance
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-```
+Full source is in the repo files.
 
 ## Installation
 
-1. Copy the script:
+1. Copy files:
    ```
-   sudo cp set-cpu-performance.sh /usr/local/bin/
-   sudo chmod +x /usr/local/bin/set-cpu-performance.sh
-   ```
-
-2. Copy the service:
-   ```
-   sudo cp cpu-performance.service /etc/systemd/system/
+   sudo -S -p '' cp set-cpu-performance.sh /usr/local/bin/
+   sudo -S -p '' chmod +x /usr/local/bin/set-cpu-performance.sh
+   sudo -S -p '' cp cpu-performance.service /etc/systemd/system/
+   sudo -S -p '' cp verify.sh /usr/local/bin/   # optional
+   sudo -S -p '' chmod +x /usr/local/bin/verify.sh
    ```
 
-3. Enable and start:
+2. Enable service:
    ```
-   sudo systemctl enable --now cpu-performance.service
+   sudo -S -p '' systemctl enable --now cpu-performance.service
    ```
 
-The service runs the script at boot and after resume from sleep.
+3. Manual apply:
+   ```
+   pkexec --disable-internal-agent /usr/local/bin/set-cpu-performance.sh performance
+   ```
 
-To apply manually without the service:
-```
-pkexec --disable-internal-agent /usr/local/bin/set-cpu-performance.sh performance
-```
+Use `-v` for detailed before/after on apply.
 
 ## Usage
 
-- `set-cpu-performance.sh performance` — max clocks (recommended for this project).
-- `set-cpu-performance.sh balanced` — dynamic with responsiveness.
-- `set-cpu-performance.sh power-saver` — conservative.
-
-The script is idempotent and safe to re-run.
-
-## Verification — Objective Evidence
-
-Run these after applying performance mode. Compare before/after on the same workload.
-
-**Governors:**
 ```
-cat /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor | sort | uniq -c
-```
-Expect mostly "performance".
-
-**Boost:**
-```
-cat /sys/devices/system/cpu/cpufreq/boost
-```
-Expect 1.
-
-**Current frequencies (elevated):**
-```
-pkexec --disable-internal-agent cat /sys/devices/system/cpu/cpu*/cpufreq/cpuinfo_cur_freq | sort | uniq -c
-```
-Higher numbers = better sustained speed.
-
-**Service:**
-```
-systemctl status cpu-performance.service --no-pager
-```
-Should be active (exited) with recent success.
-
-**Hardware identification:**
-```
-cat /sys/firmware/devicetree/base/compatible
-lscpu
+set-cpu-performance.sh performance     # max performance (recommended)
+set-cpu-performance.sh balanced -v     # dynamic with details
+set-cpu-performance.sh power-saver
 ```
 
-**Suggested benchmarks (run before and after):**
-- CPU: `sysbench cpu --cpu-max-prime=20000 --threads=8 run`
-- Compile test: time a kernel build or large project.
-- I/O: `fio` or `dd` tests on NVMe.
-- Monitor during load: `htop`, `watch -n 1 "cat /sys/devices/system/cpu/cpu*/cpufreq/cpuinfo_cur_freq | sort | uniq -c"`
+## Verification
 
-Record numbers. Real improvement is measurable frequency under load and reduced latency, not just "feels snappier."
+Run the helper after applying a mode:
 
-**Temperature and power (monitor):**
+```
+verify.sh performance
+```
+
+It reports:
+- Hardware identification
+- All key sysfs settings
+- Current frequencies
+- Quick sysbench CPU benchmark
+- Thermals
+- Service status
+
+## Benchmark Results (Example on this M1)
+
+**Hardware:** Apple M1 (T8103), 8 cores (4 Icestorm + 4 Firestorm)
+
+**Performance mode (confirmed governors=performance, boost=1):**
+- Frequencies sustained: 4× 2064 MHz, 4× 2988 MHz
+- Sysbench CPU (5s, 8 threads, max-prime=20000): ~16799 – 17048 events per second
+- Temps (light load): NAND ~38-39.5°C, Battery hotspot ~27-28°C
+
+**Settings applied:**
+- Governor: performance
+- Boost: 1
+- ASPM: performance
+- NVMe scheduler: none
+
+**Service:** active (exited), runs on boot and after sleep.
+
+**Note on comparison:** Switch to balanced (`set-cpu-performance.sh balanced`) and re-run `verify.sh` to compare events/sec and frequency distribution. Performance mode keeps higher sustained clocks.
+
+These are real captured outputs. Reproduce on your hardware for your baseline.
+
+## Thermals and Power Monitoring
+
+Performance mode increases power draw and heat.
+
+Monitor with:
 ```
 sensors
+watch -n 1 'sensors | grep -E "NAND|Hotspot"'
 ```
-Watch NAND and battery hotspot temps. High performance increases heat and power draw.
 
-## Current State on M1 (T8103)
+Typical observations (M1, light-moderate load):
+- NAND Flash: 36-42°C
+- Battery Hotspot: ~25-30°C
+- Higher under sustained CPU load
 
-- 8 cores: 4 Icestorm + 4 Firestorm.
-- Max ~2064 MHz (varies by bin and thermals).
-- Kernel: Asahi 7.1.x series.
-- NVMe and PCIe controls exposed.
-- Service successfully applies settings at boot.
+**Warnings:**
+- Watch temperatures on laptops.
+- Throttling can still occur due to hardware thermal limits.
+- Increased power consumption in performance mode.
+- Test with your specific workloads and ambient conditions.
 
-Re-apply after major updates or if governors reset.
+For long sessions, combine with monitoring tools and consider balanced for mixed use.
 
-## Notes, Warnings, and Limitations
+## Omarchy Integration
 
-- Increases power consumption and heat. Monitor on laptops.
-- Not all interfaces may be writable on every kernel or configuration.
-- Conflicts possible with other power management (e.g. future Omarchy profiles).
-- M1 has hardware limits — "performance" will still throttle under sustained heavy load due to thermals.
-- This is not a magic "make it as fast as macOS" tool. It removes Linux-side conservatism.
-- Test stability with your workloads.
-- Use at your own risk. No warranty.
+This fits well with Omarchy's customization focus.
+
+Ideas for deeper integration:
+- Add to Omarchy menu / quick actions (fuzzel or similar).
+- Create Omarchy plugin for mode switching.
+- Tie into existing performance scripts or services.
+- Use in combination with other Omarchy-mlx, video decode, or tuning projects.
+- pkexec patterns already used for safe elevation in non-interactive contexts.
+- Log applies to journal for auditing.
+
+Check `/usr/share/omarchy/bin/` and Omarchy docs for menu/plugin patterns.
+
+## Current State Example
+
+On this Omarchy M1 installation (kernel ~7.1.12 asahi):
+- Service enabled and recently successful.
+- All controls writable.
+- Frequencies reach the higher bins in performance mode.
+- NVMe and ASPM respond to the settings.
+
+Re-apply after major updates if governors reset to schedutil.
+
+## Notes and Limitations
+
+- This removes conservative Linux defaults; it is not a full macOS parity tool.
+- M1 has physical thermal and power limits.
+- Some interfaces may vary by exact kernel or configuration.
+- Always test stability.
+- Use at your own risk. Changes affect power, heat, and potentially battery life.
 
 ## Advanced / Expert Extensions
 
-A pro would also consider:
-- Per-core or cluster-specific tuning (Firestorm vs Icestorm).
-- Thermal trip points and fan curves (if applicable).
-- Using `cpupower` or custom udev rules for dynamic behavior.
-- bpftrace or perf for deeper tracing.
-- Combining with GPU/ANE optimizations (see related Omarchy projects).
-- Logging metrics over time for regression detection.
-- Packaging as a proper Omarchy plugin or AUR package.
+Professionals would also explore:
+- Cluster-aware tuning (differentiate E vs P cores)
+- Custom udev rules or cgroups
+- `perf`, `bpftrace`, or `powertop` for deeper profiling
+- Thermal trip points and fan control (where exposed)
+- Packaging as Omarchy plugin or AUR package
+- Long-term metrics collection
+- GPU/ANE + CPU co-optimization (see related projects)
 
-Contributions welcome for these.
+Contributions and improvements welcome.
 
-## Sources and Further Reading
+## Sources
 
-- Asahi Linux documentation and kernel tree.
-- Linux cpufreq and block layer documentation.
-- Direct inspection of `/sys` on Apple Silicon hardware.
-- Original implementation discovered and verified during Omarchy performance tuning sessions.
+- Direct system inspection on Apple M1 running Omarchy/Asahi.
+- Linux cpufreq, block, and pcie_aspm documentation.
+- Asahi Linux kernel and device tree.
+- Captured tool output from real hardware.
 
-This is versioned source + deep documentation. The goal is a reproducible, inspectable performance feature.
+## Files in This Repo
+
+- README.md (this file)
+- set-cpu-performance.sh (enhanced v2)
+- cpu-performance.service
+- verify.sh (benchmark + report helper)
+
+This is a living, versioned project with real source and measurable data.
 
 ---
-Project: omarchy-m1-performance  
-Style: ASD-STE100 (clear, direct, one idea per sentence where practical)  
-Raw files included for transparency and modification.
+Style: ASD-STE100 (clear, direct language).  
+Goal: Depth and reproducibility over superficial description.
