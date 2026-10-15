@@ -28,8 +28,12 @@ echo "NVMe scheduler (nvme0n1):"
 cat /sys/block/nvme0n1/queue/scheduler 2>/dev/null || echo "N/A"
 echo
 
-echo "=== 3. Frequencies (may need elevation) ==="
-pkexec --disable-internal-agent cat /sys/devices/system/cpu/cpu*/cpufreq/cpuinfo_cur_freq 2>/dev/null | sort | uniq -c || echo "Run with pkexec for full freq data"
+echo "=== 3. Frequencies ==="
+if sudo -n -l /usr/local/bin/set-cpu-performance.sh >/dev/null 2>&1; then
+  sudo -n -- /usr/local/bin/set-cpu-performance.sh --status | awk '/^Frequencies:/,0'
+else
+  cat /sys/devices/system/cpu/cpu*/cpufreq/cpuinfo_cur_freq 2>/dev/null | sort | uniq -c || echo "Frequency files need the passwordless rule. Mode switches still work after install.sh."
+fi
 echo
 
 echo "=== 4. Quick Benchmark (sysbench CPU) ==="

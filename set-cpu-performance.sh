@@ -3,10 +3,34 @@ set -euo pipefail
 
 # Enhanced M1/Apple Silicon CPU Performance Mode script for Omarchy (Asahi Linux)
 # Applies performance, balanced, or power-saver settings via direct sysfs writes.
-# Includes hardware detection, logging, before/after where possible.
+# If you are not root, this re-runs itself through passwordless sudo.
+# That only works after install.sh writes the scoped sudoers rule.
 
-VERSION="2.0-enhanced"
+VERSION="2.1-nopasswd"
 SCRIPT_NAME=$(basename "$0")
+INSTALLED_PATH="/usr/local/bin/set-cpu-performance.sh"
+
+# Help and version do not need root. Every real mode change does.
+needs_root=1
+for arg in "$@"; do
+  case "$arg" in
+    -h|--help|--version) needs_root=0 ;;
+  esac
+done
+
+if [[ "$(id -u)" -ne 0 && "$needs_root" -eq 1 ]]; then
+  target="$INSTALLED_PATH"
+  if [[ ! -x "$target" ]]; then
+    target="$0"
+  fi
+  if ! sudo -n -- "$target" "$@"; then
+    echo "Could not switch mode without a password." >&2
+    echo "Install the one-time rule: sudo ./install.sh" >&2
+    echo "After that, run: $SCRIPT_NAME performance" >&2
+    exit 1
+  fi
+  exit 0
+fi
 
 usage() {
     cat << EOF
@@ -22,31 +46,38 @@ Modes:
 Options:
   -h, --help     Show this help
   -v, --verbose  Verbose output with before/after details
+  --status      Print current settings and exit. Does not change anything
   --version      Show version
 
 Examples:
-  sudo -S -p '' $SCRIPT_NAME performance
+  $SCRIPT_NAME performance
   $SCRIPT_NAME balanced -v
+  cpu-mode power-saver
 
 Notes:
-  - Requires write access to /sys (use pkexec or root for full effect)
+  - Mode changes need root once, via a scoped passwordless sudo rule
+  - Run install.sh once. Later switches do not ask for a password
   - Persists via the accompanying systemd service
   - Increases power/heat in performance mode
 EOF
 }
 
 VERBOSE=0
-MODE="${1:-performance}"
+STATUS=0
+MODE=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -h|--help) usage; exit 0 ;;
         -v|--verbose) VERBOSE=1; shift ;;
+        --status) STATUS=1; shift ;;
         --version) echo "$SCRIPT_NAME $VERSION"; exit 0 ;;
         performance|balanced|power-saver|powersave) MODE="$1"; shift ;;
         *) echo "Unknown option: $1"; usage; exit 1 ;;
     esac
 done
+
+MODE="${MODE:-performance}"
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
@@ -152,7 +183,20 @@ show_after() {
     log "CPU $msg settings applied."
 }
 
+print_status() {
+    echo "Governors: $(cat /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor 2>/dev/null | sort | uniq -c | tr '\n' ' ')"
+    echo "Boost: $(cat /sys/devices/system/cpu/cpufreq/boost 2>/dev/null || echo N/A)"
+    echo "ASPM: $(cat /sys/module/pcie_aspm/parameters/policy 2>/dev/null || echo N/A)"
+    echo "NVMe: $(cat /sys/block/nvme0n1/queue/scheduler 2>/dev/null || echo N/A)"
+    echo "Frequencies:"
+    cat /sys/devices/system/cpu/cpu*/cpufreq/cpuinfo_cur_freq 2>/dev/null | sort | uniq -c || echo "  unreadable"
+}
+
 main() {
+    if [[ "$STATUS" -eq 1 ]]; then
+        print_status
+        exit 0
+    fi
     detect_hardware
     show_before
     apply_settings

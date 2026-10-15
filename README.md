@@ -89,7 +89,7 @@ Quick summary:
 1. Clone the repo.
 2. Copy the script and service files to the system.
 3. Enable the systemd service.
-4. Apply performance mode with pkexec.
+4. Apply a profile with `cpu-mode`. No password after install.
 5. Run `verify.sh` to confirm.
 
 The guide also covers switching modes, uninstall, and troubleshooting.
@@ -171,7 +171,7 @@ Ideas for deeper integration:
 - Create Omarchy plugin for mode switching.
 - Tie into existing performance scripts or services.
 - Use in combination with other Omarchy-mlx, video decode, or tuning projects.
-- pkexec patterns already used for safe elevation in non-interactive contexts.
+- The install script adds a scoped passwordless sudo rule for profile switches.
 - Log applies to journal for auditing.
 
 Check `/usr/share/omarchy/bin/` and Omarchy docs for menu/plugin patterns.
