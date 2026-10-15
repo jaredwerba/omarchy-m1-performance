@@ -8,6 +8,8 @@ Default Asahi power management prioritizes efficiency. This gives explicit contr
 
 Changes are applied directly to kernel sysfs interfaces and persist via systemd across boots and sleep/wake.
 
+**How to install:** See the full guide in [INSTALL.md](INSTALL.md).
+
 ## Deeper Approach
 
 A top Linux performance engineer working on Apple Silicon would go beyond basic "set governor" instructions. They start from hardware and raw kernel interfaces, measure real effects with data, use proper tools for validation, and document interactions and limits.
@@ -80,26 +82,17 @@ Full source is in the repo files.
 
 ## Installation
 
-1. Copy files:
-   ```
-   sudo -S -p '' cp set-cpu-performance.sh /usr/local/bin/
-   sudo -S -p '' chmod +x /usr/local/bin/set-cpu-performance.sh
-   sudo -S -p '' cp cpu-performance.service /etc/systemd/system/
-   sudo -S -p '' cp verify.sh /usr/local/bin/   # optional
-   sudo -S -p '' chmod +x /usr/local/bin/verify.sh
-   ```
+See the full step-by-step guide in [INSTALL.md](INSTALL.md).
 
-2. Enable service:
-   ```
-   sudo -S -p '' systemctl enable --now cpu-performance.service
-   ```
+Quick summary:
 
-3. Manual apply:
-   ```
-   pkexec --disable-internal-agent /usr/local/bin/set-cpu-performance.sh performance
-   ```
+1. Clone the repo.
+2. Copy the script and service files to the system.
+3. Enable the systemd service.
+4. Apply performance mode with pkexec.
+5. Run `verify.sh` to confirm.
 
-Use `-v` for detailed before/after on apply.
+The guide also covers switching modes, uninstall, and troubleshooting.
 
 ## Usage
 
